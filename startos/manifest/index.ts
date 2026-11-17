@@ -5,7 +5,7 @@ export const manifest = setupManifest({
   id: 'minecraft',
   title: 'Minecraft Server',
   license: 'Apache-2.0',
-  packageRepo: 'https://github.com/Start9-Community/minecraft-startos',
+  packageRepo: 'https://github.com/Start9Labs/minecraft-startos',
   upstreamRepo: 'https://github.com/itzg/docker-minecraft-server',
   marketingUrl: 'https://www.minecraft.net/',
   donationUrl: null,
