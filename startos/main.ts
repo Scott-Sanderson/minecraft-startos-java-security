@@ -138,6 +138,8 @@ export const main = sdk.setupMain(async ({ effects }) => {
   }
 
   const minecraftEnv: Record<string, string> = {
+    // CVE-2026-114938: Java 8 skips this flags file but rejects -XX:-UseBASE64Intrinsics inline.
+    JAVA_TOOL_OPTIONS: '-XX:Flags=/start9/java-security.flags',
     EULA: 'TRUE',
     TYPE: {
       vanilla: 'VANILLA',

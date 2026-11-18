@@ -51,11 +51,15 @@ Three images, and **the Java the server runs on is decided at start**.
 
 **The server image bundles one Java — the one vanilla needs — and every other Java is downloaded on demand.** Vanilla always runs on the bundled Java 25. A modded server or modpack runs on the Java chosen in the Mod Loader action (Java 25, 21, 17, or 8); any choice other than the bundled one is fetched from Adoptium by the `ensure-jre` oneshot into `start9/jre/<version>/` on the volume the first time it is needed, then put ahead of the image's own Java on the server process's `PATH`. `JAVA_HOME` is left pointing at the image's Java, which is what the image's own tooling (`mc-image-helper`) runs on; only the server, and the loader installers it spawns, see the chosen one. A selected loader, version, and modpack must support the chosen Java. Switching the Java restarts the server onto it.
 
+**JVM security default:** the common server environment sets `JAVA_TOOL_OPTIONS=-XX:Flags=/start9/java-security.flags`. Its single line, `-UseBASE64Intrinsics`, disables the intrinsic in bundled Java/helper processes and PATH-selected Java 17/21/25, including cached JREs. This mitigates CVE-2026-114938 (Java4Shell) on affected AVX-512 VBMI x86 processors; ARM is unaffected. Java 8 skips flags files named in `JAVA_TOOL_OPTIONS`; putting the unsupported intrinsic flag directly in that variable breaks Java 8 startup.
+
+The package exposes no custom JVM-option setting, and the image regenerates `user_jvm_args.txt` on each `run.sh` launch. Modpack overrides can nevertheless replace `run.sh`: the helper extracts them before reusing an already-installed loader. A pack-supplied startup script can pass a later opposing flag or replace the environment. The mitigation does not rewrite pack startup scripts.
+
 The oneshot verifies the tarball's SHA-256 against the Adoptium API, keeps a runtime that is already in place, removes the emSign roots from that runtime's `cacerts` on every run, and retries with backoff if the download fails — a modded server whose Java cannot be fetched stays waiting on it rather than starting on the wrong one.
 
 The server image is built through the root `Dockerfile`, a temporary layer that upgrades Ubuntu's `ca-certificates` and removes the emSign roots from the bundled Java's `cacerts`; it comes out once upstream ships an image built on fixed stores. The server image and the `itzg/rcon` image the console's code is taken from are **pinned by digest**, so a rebuild produces the same bits rather than following a moving tag. The downloaded runtimes are not pinned: each is the latest GA build of its release line at download time.
 
-**The console image is built here, not consumed as-is.** It copies rcon-web-admin 0.14.1, with its installed dependencies and core widgets, out of the `itzg/rcon` image and runs it on `node:24.22.1-bookworm-slim`. It also applies two patches to rcon-web-admin's browser code — a `history.pushState` call that throws and takes the page down with it, and a dropdown that renders empty until it is refreshed. The build fails loudly if either patch no longer applies, rather than silently shipping an unpatched console.
+**The console image is built here, not consumed as-is.** It copies rcon-web-admin, with its installed dependencies and core widgets, out of the `itzg/rcon` image and runs it on a digest-pinned Node.js runtime. It also applies two patches to rcon-web-admin's browser code — a `history.pushState` call that throws and takes the page down with it, and a dropdown that renders empty until it is refreshed. The build fails loudly if either patch no longer applies, rather than silently shipping an unpatched console.
 
 **nginx exists because the console listens on two ports** — HTTP on one, its websocket on another — and a browser reaching it through StartOS gets one address. The proxy serves the page, forwards the websocket, and rewrites the console's own endpoint discovery so the browser is told to connect back through the same address.
 
@@ -155,7 +159,7 @@ Vanilla, NeoForge, or Fabric with the Minecraft version, an optional loader buil
 - **The loader build floats unless pinned.** With NeoForge Version or Fabric Loader Version empty, the image installs the newest loader build for the Minecraft version and re-resolves it on every start, so a restart after an upstream release moves the server onto the new build. A pinned build is passed as `NEOFORGE_VERSION` or `FABRIC_LOADER_VERSION` and is installed until it is changed; a build that does not exist for the Minecraft version fails the start, which the server log names. NeoForge refuses a client on a different build than the server; Fabric does not check.
 - **Cost:** the service restarts, downloading a Java it has not used before, and, for a modded start, re-downloads mods; a modpack start installs the pack.
 - **Repeat safety:** idempotent, pre-filled. Mods are Modrinth project slugs, each optionally pinned to a version or a release channel; required dependencies are pulled automatically. An uploaded pack re-opens on the upload variant with the file empty, meaning "keep it", so the options can be changed without uploading again.
-- **An uploaded pack is stored on the volume** at `start9/modpack.mrpack`. The action enforces a 512 MiB limit and validates the root `modrinth.index.json` before replacing it. A validation or staging failure preserves the previous upload, and a SHA-256 identity in `store.json` restarts the service only when the uploaded bytes change.
+- **An uploaded pack is stored on the volume** at `start9/modpack.mrpack`. The form prepares a distinct volume-relative upload with the existing 512 MiB limit; the action validates the root `modrinth.index.json` before replacing the active pack. A validation or staging failure preserves the previous upload, and a SHA-256 identity in `store.json` restarts the service only when the uploaded bytes change. The accepted pack retains private permissions and takes the volume owner's UID/GID, keeping it readable when the image skips its already-owned-volume chown. The handler removes its received staging file after processing. Completed uploads whose action never runs can remain as `.modpack-upload-*.mrpack` files on the volume.
 - **Modrinth project sources are checked on start; direct `.mrpack` URLs are cached.** Force Re-sync removes that URL cache and asks the image to reprocess a project source. It remains stored until turned off, and changing Exclude Files for an unchanged hosted source turns it on automatically. Changing a hosted source invalidates the old URL cache once without enabling Force Re-sync.
 - **Switching modes removes only installer-tracked files under `mods/`.** This prevents jars from the prior mode loading alongside the new selection while preserving manually added mods, worlds, and configuration. Each installer retains its own manifest so returning to that mode restores its files normally.
 - **`VERSION` is not set for a modpack.** The image's `LATEST` default leaves project resolution unfiltered by game version, while the pack index selects Minecraft and its loader.
@@ -275,7 +279,7 @@ oneshots:
   - ensure-jre # modded only, when store.javaVersion is not the bundled one; downloads it to start9/jre/<version>/
 subcontainers:
   - minecraft-server-sub # PATH leads with the downloaded Java when one is chosen
-  - rcon-sub # rcon-web-admin from a digest-pinned itzg/rcon, on node:24.22.1-bookworm-slim, plus two frontend patches
+  - rcon-sub # rcon-web-admin from a digest-pinned itzg/rcon, on Node.js, plus two frontend patches
   - rcon-proxy-sub # nginx; unifies the console's http + websocket ports and rewrites /wsconfig
 volumes:
   main: /data # worlds, server.properties, start9/store.json, uploaded modpack, start9/jre/, rcon-db/
@@ -288,6 +292,7 @@ startos_managed_env_vars:
   - VERSION
   - INIT_MEMORY
   - MAX_MEMORY
+  - JAVA_TOOL_OPTIONS # names the Base64-intrinsics flags file; Java 8 skips that file
   - RCON_PASSWORD
   - SKIP_SERVER_PROPERTIES
   - PATH # modded only, when a downloaded Java is chosen; JAVA_HOME stays the image's
